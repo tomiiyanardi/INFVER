@@ -1,0 +1,12 @@
+'use client';
+import { useState } from 'react';
+import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
+import { money } from '@/services/format';
+import type { Allocation, Currency } from '@/types/api';
+export interface ChartSlice { id: string; name: string; percentage: number; color: string; amount?: number }
+export function DistributionChart({ allocations, currency, total }: { allocations: ChartSlice[]; currency?: Currency; total?: number }) {
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const selected = allocations.find(item => item.id === activeId);
+  return <div className="distribution"><div className="donut-wrap"><ResponsiveContainer width="100%" height={290}><PieChart><Pie data={allocations.filter(item => item.percentage > 0)} dataKey="percentage" nameKey="name" innerRadius={94} outerRadius={126} paddingAngle={3} stroke="none" isAnimationActive={false} onMouseEnter={(_data, index) => setActiveId(allocations.filter(item => item.percentage > 0)[index]?.id ?? null)} onMouseLeave={() => setActiveId(null)}>{allocations.filter(item => item.percentage > 0).map(item => <Cell key={item.id} fill={item.color} opacity={activeId && activeId !== item.id ? 0.35 : 1} />)}</Pie><Tooltip formatter={value => `${value}%`} contentStyle={{ background: '#18312a', border: '1px solid #3a5148', borderRadius: 12, color: '#f4f5ef' }} /></PieChart></ResponsiveContainer><div className="donut-center" aria-hidden="true"><span>{selected ? selected.name : 'Tu capital, mejor distribuido'}</span><strong>{selected ? `${selected.percentage}%` : total !== undefined && currency ? money(total, currency) : '100%'}</strong><small>{selected ? 'de la cartera' : 'en distintas oportunidades'}</small></div></div><ul className="chart-legend" aria-label="Distribución de la cartera">{allocations.map(item => <li key={item.id}><button type="button" onMouseEnter={() => setActiveId(item.id)} onMouseLeave={() => setActiveId(null)} onFocus={() => setActiveId(item.id)} onBlur={() => setActiveId(null)} onClick={() => setActiveId(current => current === item.id ? null : item.id)}><span className="color-dot" style={{ backgroundColor: item.color }} /><span>{item.name}</span><strong>{item.percentage}%</strong>{currency && item.amount !== undefined && <small>{money(item.amount, currency)}</small>}</button></li>)}</ul></div>;
+}
+export function allocationSlices(allocations: Allocation[]): ChartSlice[] { return allocations.map(item => ({ id: item.id, name: item.name, percentage: item.percentage, color: item.color, amount: item.amount })); }

@@ -1,0 +1,57 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { z } from 'zod';
+import { createApp } from '../src/app.js';
+import { inProcessClient } from './http-client.js';
+import { IntelligenceController } from '../src/controllers/intelligence.controller.js';
+import { IntelligenceService } from '../src/services/intelligence.service.js';
+import { MarketAnalysisService } from '../src/services/market-analysis.service.js';
+import { CachedFeed, ProviderUnavailable } from '../src/services/cached-feed.service.js';
+import { NewsProvider } from '../src/repositories/providers/news.provider.js';
+import { newsArticleSchema } from '../src/repositories/providers/gdelt.provider.js';
+import { BcraProvider, bankRateSchema } from '../src/repositories/providers/bcra.provider.js';
+import { CoinLoreProvider, DolarApiProvider, currentQuoteSchema } from '../src/repositories/providers/current-quotes.provider.js';
+import { economicEventSchema } from '../src/repositories/providers/bls.provider.js';
+import { marketSeriesSchema } from '../src/repositories/providers/twelve-data.provider.js';
+test('REST de fuentes: noticias, tasas y precios llegan al DTO incluso sin GDELT ni Twelve Data', async () => {
+  const source = { name: 'Fixture aislado', url: 'https://example.org/', termsUrl: 'https://example.org/terms', coverage: 'Sólo pruebas' };
+  const download = async (url: string) => {
+    if (url.includes('press_all')) return '<rss><item><title>Comunicado de prueba</title><link>https://www.federalreserve.gov/example.htm</link><pubDate>Fri, 13 Nov 2026 12:00:00 GMT</pubDate></item></rss>';
+    if (url.includes('plazos-fijos-online')) return '<table></table>';
+    if (url.includes('argentinadatos')) return JSON.stringify([{ entidad: 'Banco fixture', tnaClientes: 0.25, tnaNoClientes: 0.26 }]);
+    if (url.includes('coinlore')) return JSON.stringify({ data: [{ id: '90', symbol: 'BTC', name: 'Bitcoin', nameid: 'bitcoin', price_usd: '100', percent_change_24h: '-5' }], info: { time: 1794571200 } });
+    if (url.includes('dolarapi')) return JSON.stringify([{ moneda: 'USD', casa: 'bolsa', nombre: 'Bolsa', compra: 1000, venta: 1020, fechaActualizacion: '2026-11-13T12:00:00Z' }]);
+    throw new Error('Fuente no prevista en el fixture');
+  };
+  const news = new CachedFeed('test-news', new NewsProvider({ source, async load() { throw new ProviderUnavailable('Límite'); } }, download), newsArticleSchema, 900000);
+  const calendar = new CachedFeed('test-calendar', { source, async load() { return []; } }, economicEventSchema, 900000);
+  const rates = new CachedFeed('test-rates', new BcraProvider(download), bankRateSchema, 900000);
+  const prices = new CachedFeed('test-stock', { source, async load() { return []; } }, marketSeriesSchema, 900000, undefined, false, 'No configurado');
+  const crypto = new CachedFeed('test-crypto', new CoinLoreProvider(download), currentQuoteSchema, 60000);
+  const fx = new CachedFeed('test-fx', new DolarApiProvider(download), currentQuoteSchema, 900000);
+  const client = inProcessClient(createApp({ controller: new IntelligenceController(new IntelligenceService(news, calendar, rates), new MarketAnalysisService(prices, crypto, fx)) }));
+  const newsResult = await client('/api/v1/news'); assert.equal(newsResult.status, 200);
+  const newsBody = z.object({ data: z.object({ items: z.array(newsArticleSchema) }) }).parse(await newsResult.json()); assert.equal(newsBody.data.items.length, 1);
+  const rateBody = z.object({ data: z.object({ items: z.array(bankRateSchema), source: z.object({ name: z.string() }) }) }).parse(await (await client('/api/v1/bank-rates')).json()); assert.equal(rateBody.data.items[0]?.rate, 25); assert.match(rateBody.data.source.name, /ArgentinaDatos/);
+  const marketBody = z.object({ data: z.object({ feed: z.object({ status: z.literal('disabled') }), quotes: z.object({ items: z.array(currentQuoteSchema) }), fxQuotes: z.object({ items: z.array(currentQuoteSchema) }) }) }).parse(await (await client('/api/v1/market/overview')).json());
+  assert.equal(marketBody.data.quotes.items[0]?.symbol, 'BTC/USD'); assert.equal(marketBody.data.fxQuotes.items[0]?.currency, 'ARS');
+});
+
+test('REST noticias: separa idiomas, cachés y rechaza idiomas no admitidos', async () => {
+  const source = { name: 'Fixture', url: 'https://example.org/', termsUrl: 'https://example.org/terms', coverage: 'Prueba' };
+  let englishCalls = 0; let spanishCalls = 0;
+  const article = (language: string) => ({ id: language, title: language, url: 'https://example.org/news', publisher: 'Fixture', indexedAt: '2026-11-13T12:00:00Z', language, topics: ['Mercados'] });
+  const english = new CachedFeed('test-en', { source, async load() { englishCalls++; return [article('English')]; } }, newsArticleSchema, 900000);
+  const spanish = new CachedFeed('test-es', { source, async load() { spanishCalls++; return [article('Spanish')]; } }, newsArticleSchema, 900000);
+  const calendar = new CachedFeed('calendar', { source, async load() { return []; } }, economicEventSchema, 900000);
+  const rates = new CachedFeed('rates', { source, async load() { return []; } }, bankRateSchema, 900000);
+  const prices = new CachedFeed('prices', { source, async load() { return []; } }, marketSeriesSchema, 900000);
+  const client = inProcessClient(createApp({ controller: new IntelligenceController(new IntelligenceService(english, calendar, rates, spanish), new MarketAnalysisService(prices)) }));
+  const schema = z.object({ data: z.object({ items: z.array(newsArticleSchema) }) });
+  const read = async (language: string) => schema.parse(await (await client('/api/v1/news?language=' + language)).json()).data.items;
+  assert.equal((await read('es'))[0]?.language, 'Spanish');
+  assert.equal((await read('en'))[0]?.language, 'English');
+  assert.equal((await read('es'))[0]?.language, 'Spanish');
+  assert.equal(englishCalls, 1); assert.equal(spanishCalls, 1);
+  assert.equal((await client('/api/v1/news?language=fr')).status, 422);
+});

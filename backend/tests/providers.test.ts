@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { downloadText } from '../src/repositories/providers/http.js';
-import { NewsProvider, parseFederalReserveRss } from '../src/repositories/providers/news.provider.js';
+import { NewsProvider, extractShareImage, parseFederalReserveRss } from '../src/repositories/providers/news.provider.js';
 import { parseArgentinaRates } from '../src/repositories/providers/argentina-rates.provider.js';
-import { parseCoinLore, parseDolarApi } from '../src/repositories/providers/current-quotes.provider.js';
+import { parseCoinLore, parseDolarApi, previousClose, withPreviousClose } from '../src/repositories/providers/current-quotes.provider.js';
+import { parseGdelt } from '../src/repositories/providers/gdelt.provider.js';
 import { ProviderUnavailable } from '../src/services/cached-feed.service.js';
 const source = { name: 'Fixture', url: 'https://example.org', termsUrl: 'https://example.org/terms', coverage: 'Prueba' };
 test('descargador: sigue redirección canónica segura y decodifica español ISO-8859-1', async () => {
@@ -53,4 +54,26 @@ test('noticias: respaldo español conserva idioma, fuente y titular completo ant
   assert.equal(articles[0]?.publisher, 'Banco de España');
   assert.equal(articles[0]?.title, title);
   assert.match(provider.source.coverage, /gratis/);
+});
+
+test('noticias: imagen de portada sólo HTTPS, desde RSS, Open Graph o GDELT', async () => {
+  assert.equal(extractShareImage('<head><meta content="/img/portada.jpg" property="og:image"></head>', 'https://example.org/nota'), 'https://example.org/img/portada.jpg');
+  assert.equal(extractShareImage('<meta name="twitter:image" content="http://example.org/a.jpg">', 'https://example.org/nota'), null);
+  assert.equal(extractShareImage('<p>sin metadatos</p>', 'https://example.org/nota'), null);
+  const xml = '<rss><item><title>Con foto</title><link>https://example.org/n</link><pubDate>Fri, 13 Nov 2026 12:00:00 GMT</pubDate><enclosure url="https://cdn.example.org/f.jpg" type="image/jpeg"/></item></rss>';
+  assert.equal(parseFederalReserveRss(xml)[0]?.image, 'https://cdn.example.org/f.jpg');
+  const gdelt = parseGdelt(JSON.stringify({ articles: [{ title: 'Bitcoin sube', url: 'https://example.org/b', seendate: '20261113T120000Z', socialimage: 'https://example.org/b.jpg' }] }));
+  assert.equal(gdelt[0]?.image, 'https://example.org/b.jpg');
+  const page = '<meta property="og:image" content="https://example.org/og.jpg">';
+  const provider = new NewsProvider({ source, async load() { return []; } }, async url => url.endsWith('.xml') ? xml.replace('<enclosure url="https://cdn.example.org/f.jpg" type="image/jpeg"/>', '') : page);
+  const articles = await provider.load(); assert.equal(articles[0]?.image, 'https://example.org/og.jpg');
+});
+test('dólar: variación contra el último cierre anterior al día de la cotización', () => {
+  const history = [{ casa: 'blue', fecha: '2026-11-11', compra: 1, venta: 1500 }, { casa: 'blue', fecha: '2026-11-12', compra: 1, venta: 1550 }, { casa: 'blue', fecha: '2026-11-13', compra: 1, venta: 1575 }];
+  assert.equal(previousClose(history, '2026-11-13'), 1550);
+  assert.equal(previousClose([], '2026-11-13'), null);
+  const [quote] = parseDolarApi([{ moneda: 'USD', casa: 'blue', nombre: 'Blue', compra: 1555, venta: 1575, fechaActualizacion: '2026-11-13T15:00:00Z' }]);
+  assert.ok(quote);
+  const enriched = withPreviousClose(quote, 1550); assert.equal(enriched.change24h, 1.61); assert.equal(enriched.changeBasis, 'previous-close');
+  assert.equal(withPreviousClose(quote, null).change24h, null);
 });

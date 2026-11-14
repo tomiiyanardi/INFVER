@@ -2,12 +2,12 @@ import { z } from 'zod';
 import type { CurrentQuote } from '../../entities/intelligence.js';
 import { ProviderUnavailable, type FeedProvider } from '../../services/cached-feed.service.js';
 import { downloadText } from './http.js';
-export const currentQuoteSchema = z.object({ symbol: z.string(), name: z.string(), currency: z.enum(['ARS', 'USD']), price: z.number().positive(), buy: z.number().nonnegative().nullable(), change24h: z.number().nullable(), quotedAt: z.iso.datetime().nullable(), description: z.string(), sourceUrl: z.url(), severity: z.enum(['red', 'amber']).nullable() });
+export const currentQuoteSchema = z.object({ symbol: z.string(), name: z.string(), currency: z.enum(['ARS', 'USD']), price: z.number().positive(), buy: z.number().nonnegative().nullable(), change24h: z.number().nullable(), quotedAt: z.iso.datetime().nullable(), description: z.string(), sourceUrl: z.url(), severity: z.enum(['red', 'amber']).nullable(), changeBasis: z.enum(['24h', 'previous-close']).optional() });
 const numeric = z.union([z.string().min(1), z.number()]).transform(Number).pipe(z.number().finite());
 const cryptoSchema = z.object({ data: z.array(z.object({ id: z.string(), symbol: z.string(), name: z.string(), nameid: z.string(), price_usd: numeric.pipe(z.number().positive()), percent_change_24h: numeric })), info: z.object({ time: z.number().positive() }) });
 export function parseCoinLore(payload: unknown): CurrentQuote[] {
   const parsed = cryptoSchema.parse(payload);
-  return parsed.data.filter(item => ['bitcoin', 'ethereum', 'tether'].includes(item.nameid)).map(item => ({ symbol: `${item.symbol}/USD`, name: item.name, currency: 'USD', price: item.price_usd, buy: null, change24h: item.percent_change_24h, quotedAt: new Date(parsed.info.time * 1000).toISOString(), description: item.symbol === 'USDT' ? 'Stablecoin de Tether; su paridad no es una garantía ni un depósito bancario.' : 'Criptomoneda volátil. Precio agregado de referencia, no una oferta de compra o venta.', sourceUrl: `https://www.coinlore.com/coin/${item.nameid}`, severity: item.percent_change_24h <= -20 ? 'red' : item.percent_change_24h <= -5 ? 'amber' : null }));
+  return parsed.data.filter(item => ['bitcoin', 'ethereum', 'tether'].includes(item.nameid)).map(item => ({ symbol: `${item.symbol}/USD`, name: item.name, currency: 'USD', price: item.price_usd, buy: null, change24h: item.percent_change_24h, quotedAt: new Date(parsed.info.time * 1000).toISOString(), description: item.symbol === 'USDT' ? 'Stablecoin de Tether; su paridad no es una garantía ni un depósito bancario.' : 'Criptomoneda volátil. Precio agregado de referencia, no una oferta de compra o venta.', sourceUrl: `https://www.coinlore.com/coin/${item.nameid}`, changeBasis: '24h' as const, severity: item.percent_change_24h <= -20 ? 'red' : item.percent_change_24h <= -5 ? 'amber' : null }));
 }
 export class CoinLoreProvider implements FeedProvider<CurrentQuote> {
   constructor(private readonly download = downloadText) {}
@@ -22,8 +22,33 @@ const fxSchema = z.array(z.object({ moneda: z.string(), casa: z.string(), nombre
 export function parseDolarApi(payload: unknown): CurrentQuote[] {
   return fxSchema.parse(payload).filter(item => item.moneda === 'USD' && item.venta !== null).map(item => ({ symbol: `USD/${item.casa.toUpperCase()}`, name: `Dólar ${item.nombre}`, currency: 'ARS', price: item.venta ?? 0, buy: item.compra, change24h: null, quotedAt: new Date(item.fechaActualizacion).toISOString(), description: 'Pesos por dólar. Compra y venta de referencia; no incluye comisiones ni confirma disponibilidad para operar.', sourceUrl: 'https://dolarapi.com/', severity: null }));
 }
+const historySchema = z.array(z.object({ casa: z.string(), fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), venta: z.number().positive().nullable() }));
+function argentinaDate(iso: string): string { return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' }).format(new Date(iso)); }
+/** Último cierre publicado antes del día de la cotización actual. */
+export function previousClose(history: unknown, quoteDate: string): number | null {
+  const rows = historySchema.parse(history).filter(row => row.fecha < quoteDate && row.venta !== null).sort((a, b) => a.fecha.localeCompare(b.fecha));
+  return rows.at(-1)?.venta ?? null;
+}
+export function withPreviousClose(quote: CurrentQuote, close: number | null): CurrentQuote {
+  if (close === null) return quote;
+  return { ...quote, change24h: Math.round(((quote.price - close) / close) * 10_000) / 100, changeBasis: 'previous-close', description: `${quote.description} Variación contra el cierre anterior publicado por ArgentinaDatos.` };
+}
 export class DolarApiProvider implements FeedProvider<CurrentQuote> {
+  /** Cierres anteriores por casa y fecha: cambian una vez por día. */
+  private readonly closes = new Map<string, number | null>();
   constructor(private readonly download = downloadText) {}
-  readonly source = { name: 'DolarApi', url: 'https://dolarapi.com/', termsUrl: 'https://dolarapi.com/docs/uso', coverage: 'Cotizaciones del dólar en ARS, según modalidades disponibles. Se conserva la fecha informada por el proveedor. Consulta cada tres horas conforme su recomendación de uso.' };
-  async load() { return parseDolarApi(JSON.parse(await this.download('https://dolarapi.com/v1/dolares'))); }
+  readonly source = { name: 'DolarApi y ArgentinaDatos', url: 'https://dolarapi.com/', termsUrl: 'https://dolarapi.com/docs/uso', coverage: 'Cotizaciones del dólar en ARS, según modalidades disponibles. Se conserva la fecha informada por el proveedor. La variación se calcula contra el cierre anterior publicado por ArgentinaDatos (https://argentinadatos.com/docs/uso). Consulta cada tres horas conforme su recomendación de uso.' };
+  async load() {
+    const quotes = parseDolarApi(JSON.parse(await this.download('https://dolarapi.com/v1/dolares')));
+    return Promise.all(quotes.map(async quote => {
+      const casa = quote.symbol.replace('USD/', '').toLowerCase();
+      const date = argentinaDate(quote.quotedAt ?? new Date().toISOString());
+      const key = `${casa}:${date}`;
+      if (!this.closes.has(key)) {
+        try { this.closes.set(key, previousClose(JSON.parse(await this.download(`https://api.argentinadatos.com/v1/cotizaciones/dolares/${encodeURIComponent(casa)}`)), date)); }
+        catch { return quote; } // Sin histórico disponible se muestra el precio sin variación; no se inventa.
+      }
+      return withPreviousClose(quote, this.closes.get(key) ?? null);
+    }));
+  }
 }

@@ -13,6 +13,8 @@ Copy-Item frontend/.env.example frontend/.env.local
 npm run dev
 ```
 
+Si PowerShell muestra «la ejecución de scripts está deshabilitada en este sistema», habilitá los scripts locales para tu usuario una sola vez con `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`, o usá `npm.cmd` en lugar de `npm`.
+
 Frontend: http://localhost:3000. Backend: http://localhost:4000/api/v1.
 El frontend envía las peticiones a `/api/v1` y Next las reenvía al backend mediante una regla de proxy; no contiene lógica financiera ni rutas API propias.
 Las variables de ejemplo están en `backend/.env.example` y `frontend/.env.example`.
@@ -22,11 +24,11 @@ El directorio de trabajo no debe ser publicado con archivos `.env`.
 
 | Información | Fuente | Frecuencia del servidor | Clave |
 | --- | --- | --- | --- |
-| Noticias | GDELT y RSS oficiales de la Reserva Federal (inglés) y Banco de España (español) | 15 minutos; respeta pausas por límite | No |
+| Noticias | GDELT (consultas propias por idioma) y RSS oficiales de la Reserva Federal (inglés) y Banco de España (español). Imagen de portada del medio (GDELT, RSS u Open Graph), enlazada desde su origen | 15 minutos; respeta pausas por límite | No |
 | Tasas TNA | Tabla pública BCRA; respaldo ArgentinaDatos | 3 horas | No |
 | Tasas TEA | API de Transparencia del BCRA, último respaldo | 3 horas | No |
 | BTC, ETH, USDT | CoinLore, precio agregado y variación 24 h reportada | 1 minuto | No |
-| Dólares | DolarApi, compra/venta y fecha de referencia | 3 horas | No |
+| Dólares | DolarApi, compra/venta y fecha de referencia; variación contra el cierre anterior de ArgentinaDatos | 3 horas | No |
 | Acciones y ETF extranjeros | Twelve Data, cierres ajustados | 6 horas | Sí, y permisos de uso y exhibición |
 | Agenda económica | Calendario oficial BLS | 6 horas | No |
 
@@ -62,7 +64,7 @@ Webpack se usa explícitamente para evitar el fallo de procesos auxiliares de Tu
 
 ## Condiciones de las fuentes
 
-- GDELT: https://www.gdeltproject.org/about.html. Se cita el servicio; no se copian fotografías ni notas completas de terceros.
+- GDELT: https://www.gdeltproject.org/about.html. Se cita el servicio; no se copian notas completas de terceros. Las imágenes de portada se enlazan desde el medio (no se descargan ni se almacenan) y se muestran junto al nombre del medio y el enlace a la nota. Antes de un uso comercial conviene confirmar las condiciones de cada medio.
 - Reserva Federal: https://www.federalreserve.gov/disclaimer.htm. Comunicados oficiales y sus enlaces, con atribución.
 - BCRA: https://www.bcra.gob.ar/regimen-de-transparencia/. Citar fuente, fecha de descarga y selección de entidades.
 - ArgentinaDatos: https://argentinadatos.com/docs/uso. Citar ArgentinaDatos y las fuentes originales. La licencia del programa no reemplaza la licencia de las series.
@@ -77,7 +79,7 @@ Las carteras de este prototipo son compartidas y se guardan en memoria: requiere
 
 ## Estado para colaboradores
 
-El proyecto se puede versionar y compartir como prototipo. El inicio muestra un carrusel de precios y tarjetas de noticias con selector de idioma; las noticias se ordenan por fecha, sin clasificación automática de impacto. El simulador distribuye el monto mediante reglas del perfil; todavía no ajusta los porcentajes según noticias y precios ni utiliza un servicio de IA.
+El proyecto se puede versionar y compartir como prototipo. Todas las páginas muestran arriba una barra de cotizaciones (símbolo, precio y variación). El inicio presenta las noticias como portada de diario: una nota destacada que rota entre las cinco más relevantes y el resto alrededor. La relevancia es orientativa (palabras clave financieras, foco en Argentina, imagen y antigüedad; ver `frontend/src/services/news-ranking.ts`); no es una evaluación editorial de impacto. El simulador distribuye el monto mediante reglas del perfil; todavía no ajusta los porcentajes según noticias y precios ni utiliza un servicio de IA.
 
 Se verificaron TypeScript, 28 pruebas y la codificación UTF-8. La revisión del navegador confirmó precios de cripto y dólares y noticias en ambos idiomas. La última compilación de producción quedó bloqueada por un error de permisos de Windows (EPERM); comprobar `npm run build` en el equipo o entorno de destino antes de desplegar.
 
